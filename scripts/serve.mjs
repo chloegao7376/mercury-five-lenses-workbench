@@ -1,0 +1,11 @@
+import {LocalBucket} from './local-bucket.mjs';
+import http from 'node:http';
+import {Readable} from 'node:stream';
+import worker from '../dist/server/index.js';
+const port=Number(process.env.PORT||4173);
+const bucket=new LocalBucket('.local-data');
+const background=new Set();
+const context={waitUntil(p){background.add(p);p.finally(()=>background.delete(p)).catch(()=>{});}};
+const server=http.createServer(async(req,res)=>{const host=req.headers.host||'';if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(host)){res.writeHead(403);res.end('Host not allowed');return;}try{const controller=new AbortController();req.on('aborted',()=>controller.abort());res.on('close',()=>{if(!res.writableEnded)controller.abort();});const headers={...req.headers};for(const k of Object.keys(headers))if(k.startsWith('oai-authenticated-'))delete headers[k];const opts={method:req.method,headers,signal:controller.signal};if(req.method!=='GET'&&req.method!=='HEAD'){opts.body=Readable.toWeb(req);opts.duplex='half';}const request=new Request(`http://${host}${req.url}`,opts);const response=await worker.fetch(request,{...process.env,LOCAL_DEMO:'true',BUCKET:bucket},context);res.writeHead(response.status,Object.fromEntries(response.headers));if(response.body)Readable.fromWeb(response.body).pipe(res);else res.end();}catch(err){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'Local server error'}));console.error(err.message);}});
+server.listen(port,'127.0.0.1',()=>console.log(`Local: http://127.0.0.1:${port}`));
+for(const event of ['SIGTERM','SIGINT'])process.on(event,()=>server.close(()=>process.exit(0)));
